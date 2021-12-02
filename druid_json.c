@@ -235,10 +235,10 @@ static DRUIDJSON_NOINLINE void druid_getc_refill(DruidReader *p){
   p->iIn = 0;
 }
 
-static void druid_advance_c(DruidReader *p){
+static bool druid_advance_c(DruidReader *p){
   p->iIn++;
   p->file_off++;
-  return;
+  return true;
 }
 
 static int druid_getc(DruidReader *p, bool advance, bool skip_whitespace, bool skip_prefix) {
@@ -341,7 +341,8 @@ static bool read_value(DruidReader *p){
     c = druid_getc(p, true, true, false);
     switch(c){
         case '"':
-            read_string(p, true);
+            if(!read_string(p, true))
+              return false;
             p->value_type = JSON_STRING;
             break;
         case 'n':
@@ -443,41 +444,124 @@ static int druid_read_one_field(DruidReader *p) {
     }
     return GOT_FIELD;
 }
+#ifndef SQLITE_AMALGAMATION
+/* Unsigned integer types.  These are already defined in the sqliteInt.h,
+** but the definitions need to be repeated for separate compilation. */
+typedef unsigned int u32;
+typedef unsigned char u8;
+#endif
+#  define safe_isxdigit(x) isxdigit((unsigned char)(x))
+
+/*
+** Translate a single byte of Hex into an integer.
+** This routine only works if h really is a valid hexadecimal
+** character:  0..9a..fA..F
+*/
+static u8 jsonHexToInt(int h){
+  assert( (h>='0' && h<='9') ||  (h>='a' && h<='f') ||  (h>='A' && h<='F') );
+#ifdef SQLITE_EBCDIC
+  h += 9*(1&~(h>>4));
+#else
+  h += 9*(1&(h>>6));
+#endif
+  return (u8)(h & 0xf);
+}
+
+/*
+** Convert a 4-byte hex string into an integer
+*/
+static u32 jsonHexToInt4(const char *z){
+  u32 v;
+  assert( safe_isxdigit(z[0]) );
+  assert( safe_isxdigit(z[1]) );
+  assert( safe_isxdigit(z[2]) );
+  assert( safe_isxdigit(z[3]) );
+  v = (jsonHexToInt(z[0])<<12)
+      + (jsonHexToInt(z[1])<<8)
+      + (jsonHexToInt(z[2])<<4)
+      + jsonHexToInt(z[3]);
+  return v;
+}
 
 static bool read_string(DruidReader *p, bool is_value){
-    int c;
-    c = druid_getc(p, true, false, false);
-    while('"'!=c){
-        if ('\\' == c){
-            switch(c){
-                case '"':
-                case '\\':
-                case '/':
-                    break;
-                case 'b':
-                    c = '\b';
-                    break;
-                case 'n':
-                    c = '\n';
-                    break;
-                case 'r':
-                    c = '\r';
-                    break;
-                case 't':
-                    c = '\t';
-                    break;
-                case 'u':
-                    // todo: handle escaped unicode
-                    break;
-                default:
-                    druid_errmsg(p, "result %d(offset %d): unexpected escape char", p->nResult, p->file_off, c);
-                    return false;
+  int c;
+  char u_value_low[4];
+  char u_value[4];
+  c = druid_getc(p, true, false, false);
+  while ('"' != c) {
+    if ('\\' == c) {
+      c = druid_getc(p, true, false, false);
+      switch (c) {
+        case '"':
+        case '\\':
+        case '/':
+          druid_append(p, c, is_value);
+          break;
+        case 'b':
+          c = '\b';
+          druid_append(p, c, is_value);
+          break;
+        case 'n':
+          c = '\n';
+          druid_append(p, c, is_value);
+          break;
+        case 'r':
+          c = '\r';
+          druid_append(p, c, is_value);
+          break;
+        case 't':
+          c = '\t';
+          druid_append(p, c, is_value);
+          break;
+        case 'u':
+          u_value[0] = druid_getc(p, true, false, false);
+          u_value[1] = druid_getc(p, true, false, false);
+          u_value[2] = druid_getc(p, true, false, false);
+          u_value[3] = druid_getc(p, true, false, false);
+          u32 v = jsonHexToInt4(u_value);
+          if(0==v)
+            break;
+          if(v<=0x7f){
+            druid_append(p, (char)v, is_value);
+          }else if( v<=0x7ff ){
+            druid_append(p, (char)(0xc0 | (v>>6)), is_value);
+            druid_append(p, (char)(0x80 | (v&0x3f)), is_value);
+          }else{
+            u32 vlo;
+            if( (v&0xfc00)==0xd800
+                && (druid_getc(p, false, false, false)=='\\')
+                && druid_advance_c(p)
+                && (druid_getc(p, false, false, false)=='u')
+                && druid_advance_c(p)
+                && (u_value_low[0] = druid_getc(p, true, false, false))
+                && (u_value_low[1] = druid_getc(p, true, false, false))
+                && (u_value_low[2] = druid_getc(p, true, false, false))
+                && (u_value_low[3] = druid_getc(p, true, false, false))
+                && ((vlo = jsonHexToInt4(u_value_low))&0xfc00)==0xdc00
+                ){
+              /* We have a surrogate pair */
+              v = ((v&0x3ff)<<10) + (vlo&0x3ff) + 0x10000;
+              druid_append(p, (char)(0xf0 | (v>>18)), is_value);
+              druid_append(p, (char)(0x80 | ((v>>12)&0x3f)), is_value);
+              druid_append(p, (char)(0x80 | ((v>>6)&0x3f)), is_value);
+              druid_append(p, (char)(0x80 | (v&0x3f)), is_value);
+            }else{
+              druid_append(p, (char)(0xe0 | (v>>12)), is_value);
+              druid_append(p, (char)(0x80 | ((v>>6)&0x3f)), is_value);
+              druid_append(p, (char)(0x80 | (v&0x3f)), is_value);
             }
-        }
-        druid_append(p, c, is_value);
-        c = druid_getc(p, true, false, false);
+          }
+          break;
+        default:
+          druid_errmsg(p, "result %d(offset %d): unexpected escape char", p->nResult, p->file_off, c);
+          return false;
+      }
+    }else{
+      druid_append(p, c, is_value);
     }
-    return true;
+    c = druid_getc(p, true, false, false);
+  }
+  return true;
 }
 
 
@@ -972,6 +1056,7 @@ static int druidtabColumn(
        }
    }else{
        sqlite3_result_text(ctx, pCur->azVal[i], -1, SQLITE_TRANSIENT);
+//       sqlite3_result_text16(ctx, pCur->azVal[i], -1, SQLITE_TRANSIENT);
    }
 
 
