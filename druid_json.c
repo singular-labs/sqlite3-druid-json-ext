@@ -1027,37 +1027,42 @@ static int druidtabNext(sqlite3_vtab_cursor *cur){
 ** is currently pointing.
 */
 static int druidtabColumn(
-  sqlite3_vtab_cursor *cur,   /* The cursor */
-  sqlite3_context *ctx,       /* First argument to sqlite3_result_...() */
-  int i                       /* Which column to return */
-){
+    sqlite3_vtab_cursor *cur,   /* The cursor */
+    sqlite3_context *ctx,       /* First argument to sqlite3_result_...() */
+    int i                       /* Which column to return */
+) {
   double r;
-  DruidCursor *pCur = (DruidCursor*)cur;
-  DruidTable *pTab = (DruidTable*)cur->pVtab;
-  if( i>=0 && i<pTab->nCol && pCur->azVal[i]!=0 ){
-   if(pTab->metricsCols[i]){
-       switch(pCur->jsonType[i]){
-         case JSON_NUMBER:
-           r = strtod(pCur->azVal[i], 0);
-           sqlite3_result_double(ctx, r);
-           break;
-         case JSON_NULL:
-           sqlite3_result_null(ctx);
-           break;
-         default:
-           druid_errmsg(&pCur->rdr,
-                        "unexpected JSON value inside a metric, got %s='%s', expected JSON_NUMBER / JSON_NULL",
-                        pTab->colNames[i],
-                        pCur->azVal[i]
-                        );
-           sqlite3_free(pTab->base.zErrMsg);
-           pTab->base.zErrMsg = sqlite3_mprintf("%s", pCur->rdr.zErr);
-           return SQLITE_ERROR;
-       }
-   }else{
-       sqlite3_result_text(ctx, pCur->azVal[i], -1, SQLITE_TRANSIENT);
-//       sqlite3_result_text16(ctx, pCur->azVal[i], -1, SQLITE_TRANSIENT);
-   }
+  DruidCursor *pCur = (DruidCursor *) cur;
+  DruidTable *pTab = (DruidTable *) cur->pVtab;
+  if (i >= 0 && i < pTab->nCol && pCur->azVal[i] != 0) {
+    if (pTab->metricsCols[i]) {
+      switch (pCur->jsonType[i]) {
+        case JSON_NUMBER:
+          r = strtod(pCur->azVal[i], 0);
+          sqlite3_result_double(ctx, r);
+          break;
+        case JSON_NULL:
+          sqlite3_result_null(ctx);
+          break;
+        default:
+          druid_errmsg(&pCur->rdr,
+                       "unexpected JSON value inside a metric, got %s='%s', expected JSON_NUMBER / JSON_NULL",
+                       pTab->colNames[i],
+                       pCur->azVal[i]
+          );
+          sqlite3_free(pTab->base.zErrMsg);
+          pTab->base.zErrMsg = sqlite3_mprintf("%s", pCur->rdr.zErr);
+          return SQLITE_ERROR;
+      }
+    } else {
+      switch (pCur->jsonType[i]) {
+        case JSON_NULL:
+          sqlite3_result_null(ctx);
+          break;
+        default:
+          sqlite3_result_text(ctx, pCur->azVal[i], -1, SQLITE_TRANSIENT);
+      }
+    }
 
 
   }
